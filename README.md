@@ -53,6 +53,6 @@ REPOSITORY                                                                      
 
 
 ## Project Snapshot
-![Project Snapshot](./projectSnapshot.png)
+![Project Snapshot](./images/projectSnapshot.png)
 
-![API is working](./API%20is%20working.png)
+![API is working](./images/API%20is%20working.png)
