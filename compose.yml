@@ -1,0 +1,58 @@
+services:
+  db:
+    image: mysql:8
+    container_name: mysql
+    restart: unless-stopped
+    env_file:
+      - .env
+  # ports:
+  #   - "3306:3306"          # Never Expose MySQL, it is a security risk meri jaan 😘        
+    volumes:
+      - db_data_8:/var/lib/mysql     
+    # - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+    networks:
+      - app-network
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "db", "--user=ibtisam", "--password=ibtisam"]  
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: server
+    image: userapp-server-multi-stage-build
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"                  # Expose app on port 5000
+    depends_on:
+      db:
+        condition: service_healthy   # Wait for MySQL to be healthy before starting the app
+    networks:
+      - app-network
+
+  client:
+    build: 
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: client
+    image: userapp-client-multi-stage-build-with-nginx-reverse-proxy---frontend-and-api-gateway
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    networks:
+      - app-network
+    depends_on:
+      - server
+
+networks:
+  app-network:
+
+volumes:
+  db_data_8:
