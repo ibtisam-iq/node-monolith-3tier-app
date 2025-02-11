@@ -13,7 +13,7 @@ Please see the [README.md](https://github.com/ibtisamops/3TierUserApp-ReactNode-
 
 ## Docker Compose
 
-This project actually follows 3-Tier Architecture. However, for practice, I just combined the front-end and back-end into one container. To see its 3-Tier Architecture Docker Compose Deployment, please refer [here](https://github.com/ibtisamops/2TierUserApp-ReactNode-MySQL).
+This project actually follows 3-Tier Architecture. However, for practice, I just combined the front-end and back-end into one container. To see its 3-Tier Architecture Docker Compose Deployment, please refer [here](https://github.com/ibtisamops/3TierUserApp-ReactNode-MySQL).
 
 ```bash
 ibtisam@mint-dell:/media/ibtisam/L-Mint/git/Projects/2TierUserApp-ReactNode-MySQL$ docker compose up -d --build
