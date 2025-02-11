@@ -1,15 +1,12 @@
 services:
   db:
-    image: mysql:8
+    image: mysql:latest
     container_name: mysql
     restart: unless-stopped
     env_file:
-      - .env
-  # ports:
-  #   - "3306:3306"          # Never Expose MySQL, it is a security risk meri jaan 😘        
+      - .env      
     volumes:
-      - db_data_8:/var/lib/mysql     
-    # - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - db_data_2Tier:/var/lib/mysql     
 
     networks:
       - app-network
@@ -22,10 +19,10 @@ services:
 
   server:
     build:
-      context: ./server
+      context: .
       dockerfile: Dockerfile
     container_name: server
-    image: userapp-server-multi-stage-build
+    image: 1-single-backend-container-serves-both-the-api-and-static-frontend-files
     restart: unless-stopped
     env_file:
       - .env
@@ -37,22 +34,9 @@ services:
     networks:
       - app-network
 
-  client:
-    build: 
-      context: ./client
-      dockerfile: Dockerfile
-    container_name: client
-    image: userapp-client-multi-stage-build-with-nginx-reverse-proxy---frontend-and-api-gateway
-    restart: unless-stopped
-    ports:
-      - "80:80"
-    networks:
-      - app-network
-    depends_on:
-      - server
-
 networks:
   app-network:
+    driver: bridge
 
 volumes:
-  db_data_8:
+  db_data_2Tier:

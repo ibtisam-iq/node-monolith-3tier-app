@@ -115,9 +115,7 @@ app.delete('/api/users/:id', (req, res) => {
  * - The frontend should be **built** and placed in `/usr/share/nginx/html/`.
  * - Nginx will serve all frontend requests (`/`).
  * - Only API requests (`/api/*`) will be sent to the backend.
- 
-
-// 🛑 Remove frontend serving from Express (since Nginx is handling it)
+ */
 
 // Serve static files from the client/public directory
 app.use(express.static(path.join(__dirname, '../client/public')));
@@ -127,7 +125,6 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/public', 'index.html'));
 });
 
-*/
 
 // Start server
 app.listen(port, () => {
