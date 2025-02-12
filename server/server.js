@@ -83,38 +83,15 @@ app.delete('/api/users/:id', (req, res) => {
 });
 
 /**
- * 🚀 Serving API via Nginx (Recommended for Production)
- *
- * - Express should **only** handle API requests (`/api/*`).
- * - The frontend (React) will be handled separately by Nginx.
- * - Nginx will act as a **reverse proxy**, forwarding `/api/` requests to Express.
- *
- * 🔹 Example Nginx Configuration:
- * ```
- * server {
- *   listen 80;
- *   server_name example.com;
- *
- *   # Serve the React frontend (from /usr/share/nginx/html)
- *   location / {
- *     root /usr/share/nginx/html;
- *     index index.html;
- *     try_files $uri /index.html;
- *   }
- *
- *   # Proxy API requests to the Express backend
- *   location /api/ {
- *     proxy_pass http://backend:5000/;
- *     proxy_set_header Host $host;
- *     proxy_set_header X-Real-IP $remote_addr;
- *     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
- *   }
- * }
- * ```
- *
- * - The frontend should be **built** and placed in `/usr/share/nginx/html/`.
- * - Nginx will serve all frontend requests (`/`).
- * - Only API requests (`/api/*`) will be sent to the backend.
+There is no Nginx, Express is responsible for: 
+✅ Serving API routes (e.g., /api/users)
+✅ Handling API requests (receiving requests from frontend, responding directly)
+✅ Managing database interactions (e.g., CRUD operations)
+✅ Serving static files (e.g., index.html)
+✅ Handling errors and exceptions
+✅ Running the server
+
+In this case, the frontend must directly call http://backend:5000/api/users (Express' port).
  */
 
 // Serve static files from the client/public directory

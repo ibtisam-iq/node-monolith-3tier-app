@@ -15,6 +15,15 @@ Please see the [README.md](https://github.com/ibtisamops/3TierUserApp-ReactNode-
 
 This project actually follows 3-Tier Architecture. However, for practice, I just combined the front-end and back-end into one container. To see its 3-Tier Architecture Docker Compose Deployment, please refer [here](https://github.com/ibtisamops/3TierUserApp-ReactNode-MySQL).
 
+In this setup, there is no Nginx, Express is responsible for:
+
+- ✅ Serving API routes (e.g., /api/users)
+- ✅ Handling API requests (receiving requests from frontend, responding directly)
+- ✅ Managing database interactions (e.g., CRUD operations)
+- ✅ Serving static files (e.g., index.html)
+- ✅ Handling errors and exceptions
+- ✅ Running the server
+
 ```bash
 ibtisam@mint-dell:/media/ibtisam/L-Mint/git/Projects/2TierUserApp-ReactNode-MySQL$ docker compose up -d --build
 [+] Building 55.0s (17/17) FINISHED                                                                                                                 docker:desktop-linux
