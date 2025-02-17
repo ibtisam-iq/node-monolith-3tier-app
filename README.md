@@ -9,11 +9,11 @@ This is a full-stack application for managing users with a front-end built using
 
 ## Complete README
 
-Please see the [README.md](https://github.com/ibtisamops/3TierUserApp-ReactNode-MySQL/blob/main/README.md) file for a detailed description of the project.
+Please see the [README.md](https://github.com/ibtisam-iq/3TierUserApp-ReactNode-MySQL/blob/main/README.md) file for a detailed description of the project.
 
 ## Docker Compose
 
-This project actually follows 3-Tier Architecture. However, for practice, I just combined the front-end and back-end into one container. To see its 3-Tier Architecture Docker Compose Deployment, please refer [here](https://github.com/ibtisamops/3TierUserApp-ReactNode-MySQL).
+This project actually follows 3-Tier Architecture. However, for practice, I just combined the front-end and back-end into one container. To see its 3-Tier Architecture Docker Compose Deployment, please refer [here](https://github.com/ibtisam-iq/3TierUserApp-ReactNode-MySQL).
 
 In this setup, there is no Nginx, Express is responsible for:
 
