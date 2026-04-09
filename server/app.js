@@ -1,38 +1,33 @@
-// Express application configuration.
-// This file owns: middleware setup, route mounting, static file serving.
-// It does NOT start the server (that is server.js's responsibility).
-// It does NOT connect to the database (that is config/db.js's responsibility).
+# Express application configuration — API only.
+# This file owns: middleware, route mounting.
+# It does NOT serve static files — Nginx owns that (see nginx/nginx.conf).
+# It does NOT start the server — server.js owns that.
+# It does NOT connect to the database — config/db.js owns that.
 require('dotenv').config({ path: __dirname + '/../../.env' });
 
 const express    = require('express');
 const cors       = require('cors');
-const path       = require('path');
 const userRoutes = require('./routes/userRoutes');
 
 const app = express();
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors());          // Allow cross-origin requests from the React dev server
+app.use(cors());         // Allow cross-origin requests
 app.use(express.json()); // Parse incoming JSON request bodies
 
 // ── API Routes ────────────────────────────────────────────────────────────────
-// Health check — confirms the API process is running
+// Health check — confirms the API process is alive
 app.get('/api/test', (req, res) => {
   res.json({ message: 'API is working!' });
 });
 
-// All user CRUD routes delegated to the router
+// All user CRUD routes
 // Full paths: GET/POST /api/users, GET/PUT/DELETE /api/users/:id
 app.use('/api/users', userRoutes);
 
-// ── Static File Serving (Tier 1 delivery) ────────────────────────────────────
-// Express serves the pre-built React app from client/public.
-// In production, a dedicated web server (Nginx) would handle this instead.
-app.use(express.static(path.join(__dirname, '../client/public')));
-
-// Catch-all: return index.html for any non-API route so React Router works
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/public', 'index.html'));
-});
+// ── No static file serving ────────────────────────────────────────────────────
+// Express is Tier 2 (Application Layer) only.
+// Static file delivery is Tier 1 — handled exclusively by Nginx.
+// If you add express.static() here, you are collapsing Tier 1 into Tier 2.
 
 module.exports = app;

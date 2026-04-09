@@ -1,39 +1,36 @@
-# Use an alpine Node.js runtime as a parent image
-FROM node:18-alpine
+# =============================================================================
+# Dockerfile — Tier 1 (Nginx, Presentation Layer)
+#
+# Stage 1 (builder): Install dependencies and build the React app with Webpack.
+# Stage 2 (nginx):   Copy ONLY the build output into a clean Nginx image.
+#                    No Node.js, no source code, no node_modules in production.
+# =============================================================================
 
-# Set the working directory in the container for the client
-WORKDIR /usr/src/app/client
+# --- Stage 1: Build React app ---
+FROM node:18-alpine AS builder
 
-# Copy the client package.json and package-lock.json
+WORKDIR /app/client
+
+# Copy package files first so Docker can cache the npm install layer.
+# The install layer only re-runs when package.json changes, not on every code change.
 COPY client/package*.json ./
-
-# Install client dependencies explicitly including devDependencies (important for Babel)
 RUN npm install --include=dev
 
-# Copy the client source code
+# Copy source and build
 COPY client/ ./
-
-# Build the client application
 RUN npm run build
+# Output: /app/client/public/ (bundle.js, index.html, CSS, images)
 
-# Set the working directory in the container for the server
-WORKDIR /usr/src/app/server
 
-# Copy the server package.json and package-lock.json
-COPY server/package*.json ./
+# --- Stage 2: Nginx serving the build output ---
+FROM nginx:alpine
 
-# Install the server dependencies
-RUN npm ci --omit=dev
+# Replace the default Nginx config with our reverse-proxy config
+COPY nginx/nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy the server source code
-COPY server/ ./
+# Copy the React build output from Stage 1 into Nginx's web root
+COPY --from=builder /app/client/public /usr/share/nginx/html
 
-# Copy the client build files to the server's public directory
-RUN mkdir -p ./public && cp -R /usr/src/app/client/public/* ./public/
+EXPOSE 80
 
-# Expose the port the server will run on
-EXPOSE 5000
-
-# Command to run the server
-CMD ["npm", "start"]
-
+# Nginx starts automatically — no CMD needed (inherited from nginx:alpine)
