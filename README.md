@@ -145,6 +145,12 @@ FLUSH PRIVILEGES;
 EXIT;
 ```
 
+**Run the init.sql file to create the users table:**
+
+```bash
+mysql -u your_username -pyour_password test_db < database/init.sql
+```
+
 **Verify MySQL is running and the database exists:**
 
 ```bash
@@ -153,6 +159,9 @@ sudo systemctl status mysql
 
 # Confirm the database exists
 mysql -u your_username -pyour_password -e "SHOW DATABASES;" | grep test_db
+
+# Confirms the table exists
+mysql -u your_username -pyour_password -e "USE test_db; SHOW TABLES;"
 ```
 
 **Install dependencies and run the server:**
@@ -164,13 +173,9 @@ cd server && npm install
 # Install client dependencies and build the React bundle
 cd ../client && npm install && npm run build
 
-# Load env vars and start the server
-cd ..
-set -a && source .env && set +a
+# start the server
 node server/server.js
 ```
-
-> **Why `set -a`?** `set -a` marks every variable sourced from `.env` for automatic export into the child process (Node.js). `set +a` turns off the flag after sourcing so subsequent shell variables are not unintentionally exported.
 
 > **Note:** The React app must be built (`npm run build`) before starting the server. Express serves the compiled static files from `client/public/`. Running the server without building first will result in a blank frontend.
 
