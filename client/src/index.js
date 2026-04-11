@@ -1,3 +1,5 @@
+import './style.css';  // webpack will bundle this via style-loader/css-loader
+
 document.addEventListener('DOMContentLoaded', () => {
   fetchUsers();
 
@@ -81,8 +83,10 @@ function fetchUsers() {
         const li = document.createElement('li');
         li.innerHTML = `
           ${user.name} (${user.email}) - ${user.role}
-          <button class="edit" data-id="${user.id}">Edit</button>
-          <button class="delete" data-id="${user.id}">Delete</button>
+          <div class="buttons-container">
+            <button class="edit" data-id="${user.id}">Edit</button>
+            <button class="delete" data-id="${user.id}">Delete</button>
+          </div>
         `;
         userList.appendChild(li);
       });
@@ -91,4 +95,3 @@ function fetchUsers() {
       console.error('Error fetching users:', error);
     });
 }
-
