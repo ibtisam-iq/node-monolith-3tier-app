@@ -2,14 +2,21 @@
 
 ## Overview
 
-This is a Node.js + React-based monolithic user management web application serving as the **source codebase** for two downstream DevOps projects:
+This is a Node.js + React-based monolithic user management web application serving as the **source codebase** for my two downstream DevOps projects:
 
 - **[DevSecOps Pipelines](https://github.com/ibtisam-iq/devsecops-pipelines)** — Showcasing how this application is built, scanned, and packaged into secure, deployable artifacts using Jenkins, GitHub Actions, Docker, SonarQube, and Trivy.
 - **[Platform Engineering Systems](https://github.com/ibtisam-iq/platform-engineering-systems)** — Showcasing how the application artifact is deployed, operated, monitored, and scaled across modern infrastructure using Docker Compose, AWS EC2, EKS (Kubernetes), Terraform, and GitOps practices.
 
-This repository contains the application code only. All DevOps work — CI/CD pipelines, deployment configurations, and infrastructure — lives in the repositories above, which reference this codebase via Git submodules.
+This repository contains the application code only. All my DevSecOps work — CI/CD pipelines, deployment configurations, and infrastructure — lives in the repositories above, which reference this codebase via Git submodules.
 
-I did not build this application from scratch. As a DevOps Engineer, my focus is on everything that happens **around the code** — building, securing, packaging, and running it in production-like environments using industry-standard tooling.
+```
+node-monolith-app  ←  Single source of truth (codebase only)
+        │
+        ├── git submodule → DevSecOps Pipelines            (CI/CD)
+        └── git submodule → Platform Engineering Systems   (Deployment)
+```
+
+> I did not build this application from scratch. As a DevOps Engineer, my focus is on everything that happens **around the code** — building, securing, packaging, and running it in production-like environments using industry-standard tooling.
 
 ---
 
@@ -67,7 +74,9 @@ Three-tier architecture: Presentation (React SPA) → Business Logic (Express + 
 
 ### Step 0 — Codebase Modernization (`package.json`)
 
-The inherited codebase was functional but architecturally inconsistent — originally closer to a 2-tier structure where the backend mixed route definitions, SQL queries, and static file serving in a single file with no separation of concerns. Before doing any DevOps work, I audited the code, refactored it into a proper 3-tier MVC architecture, and modernized all dependencies.
+The inherited codebase was functional but architecturally inconsistent — originally closer to a 2-tier structure where the backend mixed route definitions, SQL queries, and static file serving in a single file with no separation of concerns.
+
+Before doing any DevSecOps work, I audited the code, refactored it into a proper 3-tier MVC architecture, and modernized all dependencies.
 
 > **Note:** I used **AI-assisted analysis (Perplexity Pro)** to audit the dependency tree, identify outdated packages, and apply the correct architectural fixes.
 
@@ -200,21 +209,16 @@ Also covered: monitoring, observability, scaling strategies, and system reliabil
 
 ---
 
-## Repository Role in the Larger System
-
-```
-node-monolith-app  ←  Single source of truth (codebase only)
-        │
-        ├── git submodule → DevSecOps Pipelines            (CI/CD)
-        └── git submodule → Platform Engineering Systems   (Deployment)
-```
-
-This repository holds only the application code. All DevOps work — pipelines, deployment configs, and infrastructure — lives in the downstream repositories and references this one via Git submodules.
-
----
-
 ## Key Idea
 
-> Code = Input. Everything else is built around it.
+> Code = Input. Pipelines secure it. Infrastructure runs it.
 
-The goal is not to showcase application development. The goal is to demonstrate how **any application** can be taken as input and transformed into a production-like system using DevSecOps and platform engineering practices.
+This repository is one part of a three-repo system:
+
+| Repository | Purpose |
+|---|---|
+| **This repo** (source code) | The application codebase — the input to everything else |
+| **[DevSecOps Pipelines](https://github.com/ibtisam-iq/devsecops-pipelines)** | CI/CD — build, scan, and package the code into a secure artifact using Jenkins, GitHub Actions, SonarQube, Trivy, and Docker |
+| **[Platform Engineering Systems](https://github.com/ibtisam-iq/platform-engineering-systems)** | Deployment & operations — run the artifact across Docker Compose, AWS EC2, EKS, Terraform, and GitOps workflows |
+
+The goal is not to showcase application development. The goal is to demonstrate that the same codebase can be wired into a full industry-grade DevSecOps lifecycle — automated pipelines on one side, production-grade deployment targets on the other.
