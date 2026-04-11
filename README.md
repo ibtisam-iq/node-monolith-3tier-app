@@ -152,7 +152,7 @@ EXIT;
 sudo systemctl status mysql
 
 # Confirm the database exists
-mysql -u your_username -p -e "SHOW DATABASES;" | grep test_db
+mysql -u your_username -pyour_password -e "SHOW DATABASES;" | grep test_db
 ```
 
 **Install dependencies and run the server:**
