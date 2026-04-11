@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IbtisamIQ User Management App</title>
+  <!-- style.css is imported in index.js and injected by webpack -->
+</head>
+<body>
+  <div class="navbar">
+    <div class="logo">IbtisamIQ</div>
+    <div class="links">
+      <a href="/" class="home">Home</a>
+      <a href="https://github.com/ibtisam-iq" class="youtube" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://www.linkedin.com/in/ibtisam-iq/" class="courses" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+      <a href="https://blog.ibtisam-iq.com" class="telegram" target="_blank" rel="noopener noreferrer">Blog</a>
+      <a href="https://projects.ibtisam-iq.com" class="instagram" target="_blank" rel="noopener noreferrer">Projects</a>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="content">
+      <h1>IbtisamIQ User Management App</h1>
+
+      <!-- Add User Form -->
+      <div class="form-container">
+        <h2>Add User</h2>
+        <form id="addUserForm">
+          <div class="form-group">
+            <label for="name">Name:</label>
+            <input type="text" id="name" placeholder="Name" required />
+          </div>
+          <div class="form-group">
+            <label for="email">Email:</label>
+            <input type="email" id="email" placeholder="Email" required />
+          </div>
+          <div class="form-group">
+            <label for="role">Role:</label>
+            <select id="role" required>
+              <option value="User">User</option>
+              <option value="Admin">Admin</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <button type="submit" class="submit-btn">Add User</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- User List -->
+      <div class="user-list-container">
+        <h2>User List</h2>
+        <ul id="userList">
+          <!-- User items will be dynamically added here -->
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- bundle.js is injected here automatically by HtmlWebpackPlugin -->
+</body>
+</html>

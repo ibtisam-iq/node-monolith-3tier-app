@@ -11,3 +11,8 @@
 node_modules/
 dist/
 build/
+
+# webpack build output
+client/dist/
+client/public/bundle.js
+client/public/*.png

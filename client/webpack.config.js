@@ -1,4 +1,5 @@
 const path = require('path');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 // Note: file-loader and url-loader are deprecated since Webpack 5.
 // Webpack 5 handles images and assets natively via Asset Modules.
@@ -11,8 +12,15 @@ module.exports = {
   entry: './src/index.js',
   output: {
     filename: 'bundle.js',
-    path: path.resolve(__dirname, 'public'),
+    path: path.resolve(__dirname, 'dist'),
+    clean: true,  // clears dist/ before each build
   },
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: './src/index.html',  // use our template
+      filename: 'index.html',        // output as dist/index.html
+    }),
+  ],
   module: {
     rules: [
       {
