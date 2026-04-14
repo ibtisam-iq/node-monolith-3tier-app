@@ -1,4 +1,4 @@
-# Node Monolith Application
+# Node Monolith 3-Tier Application
 
 ## Overview
 
@@ -14,7 +14,7 @@ This is a Node.js-based monolithic user management web application serving as th
 ## Application Structure
 
 ```
-node-monolith-app/
+node-monolith-3tier-app/
 ├── client/                         # Frontend (Webpack-bundled vanilla JS)
 │   ├── src/
 │   │   ├── index.js                # App logic — event listeners, fetch calls
@@ -41,9 +41,7 @@ node-monolith-app/
 ├── nginx/
 │   └── default.conf                # Nginx reverse proxy config
 ├── docs/                           # Architecture docs, migration notes
-├── .env.example                    # Environment variable template
-├── Dockerfile
-└── compose.yml
+└── .env.example                    # Environment variable template
 ```
 
 Three-tier architecture: Presentation (Webpack SPA served by Nginx) → Business Logic (Express + MVC) → Data (MySQL).
