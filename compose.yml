@@ -1,79 +1,151 @@
+# ============================================================
 # Docker Compose — Local Development Environment
 # For production deployments, see: platform-engineering-systems repo
+# ============================================================
 
-# Three services — one per tier.
+# Architecture: 3-Tier
+#   Tier 1 — nginx   : React frontend + reverse proxy (port 80)
+#   Tier 2 — server  : Express REST API              (port 5000, internal only)
+#   Tier 3 — mysql   : MySQL 8.4 LTS                 (port 3306, internal only)
 #
-# Tier 1 — nginx:    Serves React static files, proxies /api/* to Express.
-# Tier 2 — server:   Express API only. Not exposed to the host directly.
-# Tier 3 — db:       MySQL. Not exposed to the host directly.
-#
-# Only Nginx is exposed on the host (port 80).
-# Express and MySQL are internal to the Docker network.
-# This enforces the tier boundary at the network level, not just in code.
+# Usage:
+#   cp .env.example .env   # fill in your values
+#   docker compose up --build
+
+name: nodeapp
 
 services:
 
-  # ---------------------------------------------------------------------------
-  # Tier 1 — Nginx (Presentation Layer)
-  # ---------------------------------------------------------------------------
-  nginx:
-    build:
-      context: .
-      dockerfile: Dockerfile        # Multi-stage: builder (Node) + nginx
-    container_name: nginx
+  # -------------------------------------------------------
+  # MySQL 8.4 LTS Database — Tier 3
+  # -------------------------------------------------------
+  mysql:
+    image: mysql:8.4
+    # mysql:8 is a floating tag that could resolve to EOL 8.0
+    # mysql:8.4 pins to the current LTS — explicit and reproducible
+    container_name: nodeapp-mysql
     restart: unless-stopped
-    ports:
-      - "80:80"                     # Only Nginx is exposed to the outside world
-    depends_on:
-      - server                      # Nginx proxies to server; server must start first
-    networks:
-      - app-network
 
-  # ---------------------------------------------------------------------------
-  # Tier 2 — Express (Application Layer)
-  # ---------------------------------------------------------------------------
-  server:
-    build:
-      context: .
-      dockerfile: Dockerfile.server  # API-only Node.js image
-    container_name: server
-    restart: unless-stopped
-    env_file:
-      - .env
-    expose:
-      - "5000"                      # Internal only — not accessible from the host
-    depends_on:
-      db:
-        condition: service_healthy  # Wait for MySQL healthcheck before starting
-    networks:
-      - app-network
+    # env_file loads ALL variables from .env automatically
+    # The environment: block below is kept for documentation only —
+    # it shows exactly which 4 variables mysql:8.4 requires for initialization
+    env_file: .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
 
-  # ---------------------------------------------------------------------------
-  # Tier 3 — MySQL (Data Layer)
-  # ---------------------------------------------------------------------------
-  db:
-    image: mysql:latest
-    container_name: mysql
-    restart: unless-stopped
-    env_file:
-      - .env
     volumes:
-      - db_data:/var/lib/mysql
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql  # Seed schema on first run
-    expose:
-      - "3306"                      # Internal only — not accessible from the host
+      # Named volume: data persists across docker compose down
+      # Only docker compose down -v destroys it
+      - mysql-data:/var/lib/mysql
+      # Init script: executed automatically on FIRST startup only (when data dir is empty)
+      # :ro — container can read but not modify the schema file
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
     networks:
       - app-network
+
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      # CRITICAL: use -h localhost, NOT -h mysql
+      # "mysql" is the Compose service name — it resolves from OTHER containers on the network
+      # Inside this container, the correct hostname for the local MySQL server is localhost
+      # Using "-h mysql" here causes: Unknown MySQL server host 'mysql' — healthcheck always fails
+      # and dependent services (condition: service_healthy) would never start
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # -------------------------------------------------------
+  # Express REST API — Tier 2
+  # -------------------------------------------------------
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    # Explicit image name — enables direct registry push without re-tagging
+    # Without this, Docker uses the default: nodeapp-server
+    image: node-monolith-3tier-app-server
+    container_name: nodeapp-server
+    restart: unless-stopped
+
+    # env_file loads ALL variables from .env automatically (PORT, MYSQL_USER, MYSQL_PASSWORD, etc.)
+    # The only environment: entry needed is DB_HOST — to override the .env value
+    #
+    # .env has DB_HOST=localhost — correct for bare-metal, WRONG for Docker
+    # Inside the server container, localhost = the server container itself (nothing on 3306)
+    # In Docker Compose, the correct hostname is the service name: mysql
+    # Docker's internal DNS resolves "mysql" to the MySQL container's IP on app-network
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+
+    # No ports: mapping — port 5000 is internal to app-network only
+    # Only Nginx (Tier 1) talks to this service — it is never exposed to the host
+    # This is the correct security posture for a 3-tier architecture
+    expose:
+      - "${PORT:-5000}"
+
+    depends_on:
+      mysql:
+        # condition: service_healthy waits for mysqladmin ping to succeed
+        # Plain "depends_on: mysql" only waits for the container to START — not for MySQL to be READY
+        # Without this, db connection fires before MySQL accepts connections → process.exit(1)
+        condition: service_healthy
+
+    networks:
+      - app-network
+
+    healthcheck:
+      # CMD-SHELL form: required for shell variable expansion (${PORT:-5000})
+      # CMD (exec) form does NOT invoke a shell — variables would not be expanded
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${PORT:-5000}/api/test || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # -------------------------------------------------------
+  # Nginx Frontend + Reverse Proxy — Tier 1
+  # -------------------------------------------------------
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    # Explicit image name — enables direct registry push without re-tagging
+    image: node-monolith-3tier-app-client
+    container_name: nodeapp-nginx
+    restart: unless-stopped
+
+    ports:
+      # Port 80 is the ONLY port exposed to the host — this is the single entry point
+      # All traffic (static files + API) flows through Nginx
+      # MySQL (3306) and Express (5000) are internal — never mapped to host ports
+      - "80:80"
+
+    depends_on:
+      server:
+        # Wait for the Express API to be healthy before Nginx starts accepting traffic
+        # Without this, early API calls proxied by Nginx could fail on container startup
+        condition: service_healthy
+
+    networks:
+      - app-network
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 networks:
   app-network:
     driver: bridge
 
 volumes:
-  db_data:
+  # Top-level declaration required — without this, the mysql-data reference in mysql service fails
+  mysql-data:
