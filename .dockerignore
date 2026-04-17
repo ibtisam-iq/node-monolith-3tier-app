@@ -1,5 +1,55 @@
-.git/
-assets/
-node_modules/
-README.md
+# =============================================================
+# .dockerignore — node-monolith-3tier-app
+# Build context = repo root (used by both Dockerfile.client
+# and Dockerfile.server via compose.yml)
+# =============================================================
 
+# ── Version control ──────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+.gitmodules
+
+# ── Environment & secrets ────────────────────────────────────
+# Never send real credentials into the build context
+.env
+.env.*
+!.env.example            # Exception: allow the example template (no real secrets)
+
+# ── Documentation & assets (not needed in any image) ─────────
+README.md
+docs/
+assets/
+.scratchpad/
+
+# ── Frontend build output (generated artifact, not source) ───
+# Dockerfile.client Stage 1 runs `npm run build` to produce this.
+# Sending pre-existing public/ would pollute the build context
+# and could cause stale artifacts to leak into the image.
+client/public/
+
+# ── node_modules (never send — always installed inside image) ─
+# Dockerfile.client Stage 1: runs `npm install` from package.json
+# Dockerfile.server Stage 1: runs `npm install --omit=dev`
+# Sending node_modules defeats layer caching and bloats context
+client/node_modules/
+server/node_modules/
+
+# ── Docker files themselves ───────────────────────────────────
+# Not needed inside any container at runtime
+Dockerfile
+Dockerfile.client
+Dockerfile.server
+compose.yml
+.dockerignore
+
+# ── IDE and editor files ───────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ── Test and coverage reports ──────────────────────────────────
+*.log
