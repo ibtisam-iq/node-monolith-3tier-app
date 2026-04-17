@@ -19,10 +19,10 @@ module.exports = {
   plugins: [
     new HtmlWebpackPlugin({
       template: './src/index.html',  // use our template
-      filename: 'index.html',        // output as dist/index.html
+      filename: 'index.html',        // output as public/index.html
     }),
     new MiniCssExtractPlugin({
-      filename: 'style.css',         // output as dist/style.css
+      filename: 'style.css',         // output as public/style.css
     }),
   ],
   module: {
