@@ -1,1 +1,658 @@
+# =============================================================
+# DevSecOps CI Pipeline — Node.js 3-Tier App
+# Tool: GitHub Actions
+# Stack: Node.js 22 LTS · React 18 · Webpack 5 · Babel 7 · Express 4 · MySQL 8.4
+#        Nginx (Alpine) · SonarQube · Trivy · Nexus · Docker Hub · GHCR
+# Reference copy: mirrors node-monolith-3tier-app Jenkinsfile
+# Template base:   node-monolith-2tier-app/.github/workflows/ci.yml
+# Mirrors:         3-tier Jenkins pipeline (18 stages)
+# =============================================================
+#
+# Required GitHub Secrets (Settings → Secrets and variables → Actions):
+#
+#   DOCKER_USERNAME       — Docker Hub username
+#   DOCKER_PASSWORD       — Docker Hub PAT (read/write/delete)
+#   NEXUS_USERNAME        — Nexus username
+#   NEXUS_PASSWORD        — Nexus password
+#   SONAR_TOKEN           — SonarQube user token
+#   SONAR_HOST_URL        — https://sonar.ibtisam-iq.com
+#   GIT_TOKEN             — GitHub PAT with repo scope (for CD repo update)
+#
+# NOTE: GITHUB_TOKEN is automatically provided by GitHub Actions — no secret needed for GHCR login.
+#
+# ── APP STRUCTURE ──────────────────────────────────────────────────────────────
+# Two separate Dockerfiles — both require repo root as build context:
+#   Dockerfile.client → node build + nginx runtime
+#   Dockerfile.server → prod deps + node runtime (non-root)
+#
+# Two independent package.json files — NO workspace root package.json:
+#   client/package.json → React 18 + axios + Webpack 5 + Babel 7
+#   server/package.json → Express 4 + mysql2 + cors + dotenv
+#
+# ── STAGE MAP ──────────────────────────────────────────────────────────────────
+#  1  → Checkout
+#  2  → Trivy FS Scan
+#  3  → Versioning
+#  4  → Install Dependencies
+#  5  → Build Client
+#  6  → npm audit
+#  7  → ESLint SAST — Server
+#  8  → ESLint SAST — Client
+#  9  → Build & Test
+# 10  → SonarQube Analysis
+# 11  → Quality Gate
+# 12  → Docker Build — Client
+# 13  → Docker Build — Server
+# 14  → Trivy Image Scan — Client
+# 15  → Trivy Image Scan — Server
+# 16  → Push Client Image
+# 17  → Push Server Image
+# 18  → Update CD Manifest
+# post → Cleanup
+# =============================================================
+
 name: DevSecOps CI — Node.js 3-Tier
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/**'
+      - 'Jenkinsfile'
+      - 'README.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '.env.example'
+      - '.gitignore'
+      - 'compose.yml'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'Jenkinsfile'
+      - 'README.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '.env.example'
+      - '.gitignore'
+      - 'compose.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  APP_NAME: node-monolith-3tier
+
+  DOCKER_USER: mibtisam
+  CLIENT_IMAGE_NAME: mibtisam/node-3tier-client
+  SERVER_IMAGE_NAME: mibtisam/node-3tier-server
+
+  GHCR_USER: ibtisam-iq
+  GHCR_CLIENT_IMAGE: ghcr.io/ibtisam-iq/node-3tier-client
+  GHCR_SERVER_IMAGE: ghcr.io/ibtisam-iq/node-3tier-server
+
+  NEXUS_URL: https://nexus.ibtisam-iq.com
+  NEXUS_DOCKER: nexus.ibtisam-iq.com
+  NEXUS_DOCKER_REPO: docker-hosted
+
+  APP_DIR: .
+
+  SERVER_PORT: '5000'
+  CLIENT_PORT: '80'
+
+  CD_REPO: ibtisam-iq/platform-engineering-systems
+  CD_MANIFEST_PATH: systems/node-monolith/3tier/image.env
+
+jobs:
+  ci:
+    name: CI — Build, Test, Scan & Push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+      checks: write
+
+    outputs:
+      image_tag: ${{ steps.versioning.outputs.image_tag }}
+
+    steps:
+      - name: Checkout — source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Trivy — filesystem scan (CRITICAL → fail)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: fs
+          scan-ref: ${{ env.APP_DIR }}
+          scanners: secret,vuln,misconfig
+          severity: CRITICAL
+          exit-code: '1'
+          format: json
+          output: trivy-fs-critical.json
+
+      - name: Trivy — filesystem scan (HIGH/MEDIUM → warn only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        if: always()
+        with:
+          scan-type: fs
+          scan-ref: ${{ env.APP_DIR }}
+          scanners: secret,vuln,misconfig
+          severity: HIGH,MEDIUM
+          exit-code: '0'
+          format: table
+
+      - name: Upload Trivy FS report
+        uses: actions/upload-artifact@v4
+        if: always() && hashFiles('trivy-fs-critical.json') != ''
+        with:
+          name: trivy-fs-critical
+          path: trivy-fs-critical.json
+          retention-days: 14
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+
+      - name: Versioning — compute shared image tag
+        id: versioning
+        run: |
+          APP_VERSION=$(node -p "require('./server/package.json').version")
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}-${{ github.run_number }}"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+          echo "GIT_SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+          echo "🏷️ Shared image tag: ${IMAGE_TAG}"
+
+      - name: Install Dependencies — client + server
+        run: |
+          echo "📦 Installing client dependencies..."
+          npm install --prefer-offline --prefix client &
+          CLIENT_PID=$!
+
+          echo "📦 Installing server dependencies..."
+          npm install --prefer-offline --prefix server &
+          SERVER_PID=$!
+
+          wait $CLIENT_PID && echo "✅ Client deps installed"
+          wait $SERVER_PID && echo "✅ Server deps installed"
+
+      - name: Build Client — Webpack pre-flight
+        run: |
+          echo "🔨 Running client pre-flight build..."
+          cd client
+          NODE_ENV=production npm run build
+          echo "✅ Client build complete"
+          ls -lh public/
+
+      - name: Upload client build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-public
+          path: client/public/
+          retention-days: 14
+
+      - name: npm audit — client
+        run: |
+          echo "── Client audit ──"
+          cd client
+
+          npm audit --audit-level=critical --json > ../npm-audit-client.json 2>&1 || {
+            echo '❌ npm audit found CRITICAL vulnerabilities in client.'
+            cat ../npm-audit-client.json
+            exit 1
+          }
+
+          npm audit --audit-level=high || true
+          echo "✅ Client audit complete"
+
+      - name: npm audit — server
+        run: |
+          echo "── Server audit ──"
+          cd server
+
+          npm audit --omit=dev --audit-level=critical --json > ../npm-audit-server.json 2>&1 || {
+            echo '❌ npm audit found CRITICAL vulnerabilities in server.'
+            cat ../npm-audit-server.json
+            exit 1
+          }
+
+          npm audit --omit=dev --audit-level=high || true
+          echo "✅ Server audit complete"
+
+      - name: Upload npm audit reports
+        uses: actions/upload-artifact@v4
+        if: always() && (hashFiles('npm-audit-client.json') != '' || hashFiles('npm-audit-server.json') != '')
+        with:
+          name: npm-audit-reports
+          path: |
+            npm-audit-client.json
+            npm-audit-server.json
+          retention-days: 14
+
+      - name: ESLint SAST — Server
+        run: |
+          cd server
+          echo "=== ESLint — SARIF output ==="
+          npx eslint \
+            --format @microsoft/eslint-formatter-sarif \
+            --output-file ../eslint-server.sarif \
+            . || true
+
+          echo "=== ESLint — Human-readable (advisory) ==="
+          npx eslint \
+            --format stylish \
+            . 2>&1 | tee ../eslint-server.txt || true
+
+          echo "=== ESLint — Enforced (repo-owned script) ==="
+          npm run lint -- \
+            --format stylish \
+            --max-warnings=0 2>&1 | tee -a ../eslint-server.txt
+
+      - name: Upload ESLint server reports
+        uses: actions/upload-artifact@v4
+        if: always() && (hashFiles('eslint-server.sarif') != '' || hashFiles('eslint-server.txt') != '')
+        with:
+          name: eslint-server-reports
+          path: |
+            eslint-server.sarif
+            eslint-server.txt
+          retention-days: 14
+
+      - name: ESLint SAST — Client
+        run: |
+          cd client
+          echo "=== ESLint — SARIF output ==="
+          npx eslint \
+            --format @microsoft/eslint-formatter-sarif \
+            --output-file ../eslint-client.sarif \
+            src || true
+
+          echo "=== ESLint — Human-readable (advisory) ==="
+          npx eslint \
+            --format stylish \
+            src 2>&1 | tee ../eslint-client.txt || true
+
+          echo "=== ESLint — Enforced (repo-owned script) ==="
+          npm run lint -- \
+            --format stylish \
+            --max-warnings=0 2>&1 | tee -a ../eslint-client.txt
+
+      - name: Upload ESLint client reports
+        uses: actions/upload-artifact@v4
+        if: always() && (hashFiles('eslint-client.sarif') != '' || hashFiles('eslint-client.txt') != '')
+        with:
+          name: eslint-client-reports
+          path: |
+            eslint-client.sarif
+            eslint-client.txt
+          retention-days: 14
+
+      - name: Build & Test — Jest
+        run: |
+          cd server
+          CI_TEST=true npm test -- \
+            --ci \
+            --coverage \
+            --forceExit \
+            --runInBand \
+            2>&1 | tee ../jest-output.txt
+
+      - name: Publish JUnit test results
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: 'jest-results.xml'
+          check_name: Jest Test Results
+          fail_on_failure: false
+          allow_empty_results: true
+
+      - name: Upload Jest reports and coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jest-reports
+          path: |
+            jest-results.xml
+            jest-output.txt
+            coverage/
+          retention-days: 14
+
+      - name: SonarQube — static analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          export SONAR_SCANNER_VERSION=8.0.1.6346
+          export SONAR_SCANNER_HOME=$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64
+          curl --create-dirs -sSLo $HOME/.sonar/sonar-scanner.zip \
+            https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-x64.zip
+          unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
+          export PATH=$SONAR_SCANNER_HOME/bin:$PATH
+
+          sonar-scanner \
+            -Dsonar.projectKey=node-monolith-3tier \
+            -Dsonar.projectName=node-monolith-3tier \
+            -Dsonar.projectVersion=$IMAGE_TAG \
+            -Dsonar.sources=client/src,server \
+            -Dsonar.tests=client/src,server \
+            "-Dsonar.test.inclusions=**/*.test.js,**/*.spec.js,**/__tests__/**" \
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+            -Dsonar.junit.reportPaths=jest-results.xml \
+            "-Dsonar.exclusions=**/node_modules/**,client/public/**,nginx/**,coverage/**,**/*.min.js,**/jest.config.js,**/eslint.config.mjs,**/webpack.config.js" \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.working.directory="${GITHUB_WORKSPACE}/.scannerwork" \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.token="${SONAR_TOKEN}"
+
+      - name: SonarQube — Quality Gate check
+        uses: sonarsource/sonarqube-quality-gate-action@cf038b0e0cdecfa9e56c198bbb7d21d751d62c3b
+        timeout-minutes: 5
+        with:
+          scanMetadataReportFile: ${{ github.workspace }}/.scannerwork/report-task.txt
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Docker Hub — login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: GHCR — login
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Nexus — login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.NEXUS_DOCKER }}
+          username: ${{ secrets.NEXUS_USERNAME }}
+          password: ${{ secrets.NEXUS_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Build — Client
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.APP_DIR }}
+          file: Dockerfile.client
+          push: false
+          load: true
+          tags: |
+            ${{ env.CLIENT_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+            ${{ env.CLIENT_IMAGE_NAME }}:latest
+            ${{ env.GHCR_CLIENT_IMAGE }}:${{ steps.versioning.outputs.image_tag }}
+            ${{ env.GHCR_CLIENT_IMAGE }}:latest
+            ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-client:${{ steps.versioning.outputs.image_tag }}
+            ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-client:latest
+          labels: |
+            org.opencontainers.image.title=node-3tier-client
+            org.opencontainers.image.version=${{ steps.versioning.outputs.image_tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp || github.run_started_at }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=React 18 + Nginx frontend — Tier 1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Docker Build — Server
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.APP_DIR }}
+          file: Dockerfile.server
+          push: false
+          load: true
+          tags: |
+            ${{ env.SERVER_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+            ${{ env.SERVER_IMAGE_NAME }}:latest
+            ${{ env.GHCR_SERVER_IMAGE }}:${{ steps.versioning.outputs.image_tag }}
+            ${{ env.GHCR_SERVER_IMAGE }}:latest
+            ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-server:${{ steps.versioning.outputs.image_tag }}
+            ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-server:latest
+          build-args: |
+            PORT=${{ env.SERVER_PORT }}
+          labels: |
+            org.opencontainers.image.title=node-3tier-server
+            org.opencontainers.image.version=${{ steps.versioning.outputs.image_tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp || github.run_started_at }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=Node.js Express API — Tier 2
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy — client image scan OS packages (CRITICAL+HIGH → warn only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ env.CLIENT_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          vuln-type: os
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy — client image scan library (CRITICAL → fail)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ env.CLIENT_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          vuln-type: library
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy — client image scan library (HIGH/MEDIUM → warn only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        if: always()
+        with:
+          scan-type: image
+          image-ref: ${{ env.CLIENT_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          vuln-type: library
+          severity: HIGH,MEDIUM
+          exit-code: '0'
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy — client image full report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        if: always()
+        with:
+          scan-type: image
+          image-ref: ${{ env.CLIENT_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: '0'
+          ignore-unfixed: true
+          format: json
+          output: trivy-client-image-report.json
+
+      - name: Upload Trivy client image report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-client-image-report
+          path: trivy-client-image-report.json
+          retention-days: 14
+
+      - name: Trivy — server image scan OS packages (CRITICAL+HIGH → warn only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ env.SERVER_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          vuln-type: os
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy — server image scan library (CRITICAL → fail)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ env.SERVER_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          vuln-type: library
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy — server image scan library (HIGH/MEDIUM → warn only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        if: always()
+        with:
+          scan-type: image
+          image-ref: ${{ env.SERVER_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          vuln-type: library
+          severity: HIGH,MEDIUM
+          exit-code: '0'
+          ignore-unfixed: true
+          format: table
+
+      - name: Trivy — server image full report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        if: always()
+        with:
+          scan-type: image
+          image-ref: ${{ env.SERVER_IMAGE_NAME }}:${{ steps.versioning.outputs.image_tag }}
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: '0'
+          ignore-unfixed: true
+          format: json
+          output: trivy-server-image-report.json
+
+      - name: Upload Trivy server image report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-server-image-report
+          path: trivy-server-image-report.json
+          retention-days: 14
+
+      - name: Push Client Image — Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.CLIENT_IMAGE_NAME }}:$IMAGE_TAG
+          docker push ${{ env.CLIENT_IMAGE_NAME }}:latest
+          echo "✅ Docker Hub client push complete"
+
+      - name: Push Client Image — GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.GHCR_CLIENT_IMAGE }}:$IMAGE_TAG
+          docker push ${{ env.GHCR_CLIENT_IMAGE }}:latest
+          echo "✅ GHCR client push complete"
+
+      - name: Push Client Image — Nexus
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-client:$IMAGE_TAG
+          docker push ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-client:latest
+          echo "✅ Nexus client push complete"
+
+      - name: Push Server Image — Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.SERVER_IMAGE_NAME }}:$IMAGE_TAG
+          docker push ${{ env.SERVER_IMAGE_NAME }}:latest
+          echo "✅ Docker Hub server push complete"
+
+      - name: Push Server Image — GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.GHCR_SERVER_IMAGE }}:$IMAGE_TAG
+          docker push ${{ env.GHCR_SERVER_IMAGE }}:latest
+          echo "✅ GHCR server push complete"
+
+      - name: Push Server Image — Nexus
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-server:$IMAGE_TAG
+          docker push ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-server:latest
+          echo "✅ Nexus server push complete"
+
+      - name: Update CD manifest — atomic client/server tag handoff
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          if [ -z "${IMAGE_TAG}" ]; then
+            echo '❌ IMAGE_TAG is empty — aborting CD repo update'
+            exit 1
+          fi
+
+          git clone https://github.com/${CD_REPO}.git _cd_repo_tmp
+          cd _cd_repo_tmp
+
+          git remote set-url origin https://x-access-token:${GIT_TOKEN}@github.com/${CD_REPO}.git
+
+          git config --local user.email "github-actions@ibtisam-iq.com"
+          git config --local user.name  "GitHub Actions CI"
+
+          mkdir -p "$(dirname "${CD_MANIFEST_PATH}")"
+
+          echo "=== Current manifest ==="
+          cat ${CD_MANIFEST_PATH} 2>/dev/null || echo "(file does not exist yet)"
+
+          echo "=== Writing new manifest (both tags atomic) ==="
+          cat > ${CD_MANIFEST_PATH} << EOF
+          CLIENT_IMAGE_TAG=${IMAGE_TAG}
+          SERVER_IMAGE_TAG=${IMAGE_TAG}
+          UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          UPDATED_BY=github-actions-run-${{ github.run_number }}
+          GIT_COMMIT=${{ github.sha }}
+          GIT_BRANCH=${{ github.ref_name }}
+          EOF
+
+          git add "${CD_MANIFEST_PATH}"
+
+          git diff --cached --quiet \
+            && echo "ℹ️ Nothing to commit — image tag unchanged" \
+            || { git commit -m "ci: update node-3tier image tags to ${IMAGE_TAG} [skip ci]" && git push origin HEAD; }
+
+          git remote set-url origin https://github.com/${CD_REPO}.git
+
+      - name: Cleanup — remove local Docker images
+        if: always()
+        run: |
+          docker rmi ${{ env.CLIENT_IMAGE_NAME }}:$IMAGE_TAG || true
+          docker rmi ${{ env.CLIENT_IMAGE_NAME }}:latest || true
+          docker rmi ${{ env.GHCR_CLIENT_IMAGE }}:$IMAGE_TAG || true
+          docker rmi ${{ env.GHCR_CLIENT_IMAGE }}:latest || true
+          docker rmi ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-client:$IMAGE_TAG || true
+          docker rmi ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-client:latest || true
+
+          docker rmi ${{ env.SERVER_IMAGE_NAME }}:$IMAGE_TAG || true
+          docker rmi ${{ env.SERVER_IMAGE_NAME }}:latest || true
+          docker rmi ${{ env.GHCR_SERVER_IMAGE }}:$IMAGE_TAG || true
+          docker rmi ${{ env.GHCR_SERVER_IMAGE }}:latest || true
+          docker rmi ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-server:$IMAGE_TAG || true
+          docker rmi ${{ env.NEXUS_DOCKER }}/${{ env.NEXUS_DOCKER_REPO }}/node-3tier-server:latest || true
+
+          docker image prune -f || true
+
+      - name: Cleanup — remove cloned CD repo workspace
+        if: always()
+        run: rm -rf _cd_repo_tmp
