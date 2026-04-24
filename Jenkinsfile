@@ -17,7 +17,6 @@
 // Node.js 22, npm, trivy, and docker are installed system-wide on the
 // Jenkins OS and are available on OS PATH.
 //   node -v  → v22.x  (verified on jenkins-server)
-//   npm  -v  → resolves automatically with node
 // sonar-scanner is NOT installed system-wide — it is registered in
 // Manage Jenkins → Tools → SonarQube Scanner as 'sonar-scanner'.
 // SCANNER_HOME = tool 'sonar-scanner' resolves its install path at runtime.
@@ -32,14 +31,6 @@
 // Two independent package.json files — NO workspace root:
 //   client/package.json → React 18 + axios 1.7 + Webpack 5 + Babel 7 (devDeps needed at build)
 //   server/package.json → express 4 + mysql2 + cors + dotenv (prod only)
-//
-// Key differences from 2-tier:
-//   - TWO Docker images produced per run (client + server)
-//   - client: nginx:alpine (~20 MB) not node:alpine (~180 MB)
-//   - server: non-root user (appuser) enforced in Dockerfile.server
-//   - Webpack output: client/public/ (bundle.js + index.html + style.css)
-//   - nginx/docker.conf: proxy_pass → http://server:5000/api/ (Compose DNS)
-//   - React 18 (not 17), axios ^1.7.9 (no SSRF CVE unlike 2-tier ^0.21.1)
 //
 // ── VERSIONING STRATEGY ───────────────────────────────────────────────────────
 // BOTH images carry the SAME tag: <version>-<short-git-sha>-<build-number>
@@ -59,12 +50,12 @@
 //  1  → Checkout
 //  2  → Trivy FS Scan          (pre-build, 2-pass: CRITICAL exit1 + HIGH/MED advisory)
 //  3  → Versioning             (server/package.json + git SHA + build number)
-//  4  → Install Dependencies   (client npm install + server npm install --omit=dev, parallel)
+//  4  → Install Dependencies   (client npm install + server npm install, parallel)
 //  5  → Build Client           (Webpack 5 → client/public/ — required before Docker build)
 //  6  → npm audit              (client + server, 2-pass per package)
-//  7  → ESLint SAST — Server   (eslint-plugin-security, enforced errors)
-//  8  → ESLint SAST — Client   (+ eslint-plugin-react, react-hooks, XSS rules)
-//  9  → Build & Test           (Jest --ci --coverage --passWithNoTests)
+//  7  → ESLint SAST — Server   (repo-owned config + SARIF + enforced lint)
+//  8  → ESLint SAST — Client   (repo-owned config + SARIF + enforced lint)
+//  9  → Build & Test           (repo-owned Jest config, CI test run + coverage)
 // 10  → SonarQube Analysis     (sonar-scanner CLI, client/src + server as sources)
 // 11  → Quality Gate           (waitForQualityGate, 5 min timeout, abortPipeline)
 // 12  → Docker Build — Client  (Dockerfile.client → nginx:alpine image)
@@ -272,14 +263,15 @@ pipeline {
         //
         // Two independent package.json files — no workspace root manifest.
         //
-        // Client: full install (devDeps required for Webpack 5 + Babel 7)
+        // Client: full install (devDeps required for Webpack 5 + Babel 7 + ESLint)
         //   react 18, axios 1.7, webpack 5, babel-loader, css-loader,
-        //   html-webpack-plugin, mini-css-extract-plugin
+        //   html-webpack-plugin, mini-css-extract-plugin, eslint toolchain
         //
-        // Server: production-only (--omit=dev) — matches Dockerfile.server Stage 1
-        //   express, mysql2, cors, dotenv
+        // Server: full install (devDeps required for Jest + ESLint stages)
+        //   express, mysql2, cors, dotenv, jest, supertest, eslint toolchain
         //
         // --prefer-offline: uses npm cache on hit, falls back to registry.
+        // Repo-owned lint/test config means CI must install devDependencies here.
         // ────────────────────────────────────────────────────────────────────
         stage('Install Dependencies') {
             parallel {
@@ -296,13 +288,14 @@ pipeline {
                     }
                 }
 
-                stage('Server — npm install (prod)') {
+                // Server: full install (devDeps required for Jest + ESLint stages)
+                stage('Server — npm install') {
                     steps {
                         dir('server') {
-                            echo '📦 Installing server dependencies (--omit=dev)...'
+                            echo '📦 Installing server dependencies...'
                             sh '''
-                                npm install --prefer-offline --omit=dev
-                                echo "✅ Server deps: $(npm list --depth=0 --omit=dev 2>/dev/null | wc -l) packages"
+                                npm install --prefer-offline
+                                echo "✅ Server deps: $(npm list --depth=0 2>/dev/null | wc -l) packages"
                             '''
                         }
                     }
@@ -312,10 +305,34 @@ pipeline {
         }
 
         // ────────────────────────────────────────────────────────────────────
-        // STAGE 5 — Build Client (Webpack)
+        // STAGE 5 — Build Client (Webpack) — Pre-flight Gate
         //
-        // Compiles React 18 frontend with Webpack 5 in production mode.
-        // Output: client/public/bundle.js + index.html + style.css
+        // Runs Webpack 5 on the Jenkins agent AS A GATE — NOT to produce
+        // the artifact that goes into the Docker image.
+        //
+        // ── WHY WE BUILD TWICE ───────────────────────────────────────────
+        // The Docker image is built in Stage 12 via `docker build` which
+        // executes Dockerfile.client Stage 1 (`RUN npm run build`) INSIDE
+        // a fresh container. That internal Webpack run produces the actual
+        // /usr/share/nginx/html content that ships in the image.
+        //
+        // This Stage 5 build runs on the Jenkins agent for two independent
+        // reasons:
+        //   (a) FAIL FAST — catches Webpack config errors, missing imports,
+        //       or Babel transpilation failures ~60-90s earlier than Stage 12
+        //   (b) ARTIFACT — the bundle is archived for human inspection and
+        //       bundle-size tracking without needing to extract from the image
+        //
+        // The client/public/ directory produced here is NOT copied into the
+        // Docker image. Dockerfile.client has its own COPY + RUN npm run build
+        // and builds independently from client/ source.
+        //
+        // ── NODE_ENV NOTE ────────────────────────────────────────────────
+        // NODE_ENV=production is set explicitly here to match the mode that
+        // Webpack uses when triggered by `docker build` in Stage 12.
+        // Dockerfile.client does NOT pass --build-arg NODE_ENV — if your
+        // webpack.config.js branches on NODE_ENV, verify Stage 12 also sets
+        // it, either via ARG/ENV in Dockerfile.client or a --build-arg here.
         //
         // webpack.config.js key facts:
         //   entry:   ./src/index.js
@@ -324,23 +341,15 @@ pipeline {
         //            MiniCssExtractPlugin (→ public/style.css)
         //   assets:  Webpack 5 native Asset Modules (no file-loader/url-loader)
         //            Files <8KB inlined as base64; larger files emitted separately
-        //
-        // This stage MUST complete before Stage 12 (Docker Build — Client)
-        // because Dockerfile.client Stage 1 runs `npm run build` inside the container.
-        // However, we also run it here to:
-        //   (a) fail fast on Webpack errors before reaching Docker build
-        //   (b) archive the bundle as a build artifact for inspection
-        //
-        // NODE_ENV=production: activates React production mode + minification.
         // ────────────────────────────────────────────────────────────────────
         stage('Build Client') {
             steps {
                 dir(APP_DIR) {
-                    echo '🔨 Compiling React 18 frontend with Webpack 5 (production mode)...'
+                    echo '🔨 Pre-flight Webpack build (gate + artifact — NOT the Docker image source)...'
                     sh """
                         cd client
                         NODE_ENV=production npm run build
-                        echo "✅ Webpack build complete — output:"
+                        echo "✅ Webpack pre-flight build complete — output (agent disk only, not in Docker image):"
                         ls -lh public/
                         echo "--- bundle.js size ---"
                         du -sh public/bundle.js 2>/dev/null || echo "(bundle.js not found)"
@@ -352,7 +361,7 @@ pipeline {
                     archiveArtifacts artifacts: 'client/public/**', allowEmptyArchive: true
                 }
                 failure {
-                    echo '❌ Webpack build failed — check client/webpack.config.js, src/index.js, and Babel config'
+                    echo '❌ Webpack pre-flight build failed — fix before Docker build reaches Stage 12. Check client/webpack.config.js, src/index.js, and Babel config.'
                 }
             }
         }
@@ -369,11 +378,6 @@ pipeline {
         //   Pass A — CRITICAL only, --audit-level=critical, exit 1 → FAILS build
         //   Pass B — HIGH+MEDIUM, --audit-level=high, exit 0 → advisory only
         //
-        // 3-tier improvement over 2-tier:
-        //   axios upgraded from ^0.21.1 to ^1.7.9 in client/package.json.
-        //   The SSRF CVE (axios <0.21.1) that appeared in 2-tier audit is FIXED here.
-        //   npm audit should be clean for client.
-        //
         // Server audit uses --omit=dev: only prod deps ship to production.
         // ────────────────────────────────────────────────────────────────────
         stage('npm audit') {
@@ -385,7 +389,7 @@ pipeline {
                         cd client
 
                         # Pass A — CRITICAL: fail build
-                        npm audit --audit-level=critical --json > ../npm-audit-client.json 2>&1 || {
+                        npm audit --audit-level=critical --json > ../npm-audit-client.json 2>/dev/null || {
                             echo '❌ npm audit found CRITICAL vulnerabilities in client.'
                             cat ../npm-audit-client.json
                             exit 1
@@ -431,47 +435,16 @@ pipeline {
         //   detect-child-process, detect-unsafe-regex,
         //   detect-non-literal-fs-filename, detect-object-injection
         //
-        // SARIF output → archivable audit trail.
-        // Enforced: exits 1 if any ERROR-level rule fires.
-        // Temp config cleaned in post{} always{}.
+        // Three passes:
+        //   1. SARIF output         → archivable audit trail (non-blocking)
+        //   2. Stylish advisory     → human-readable report (non-blocking)
+        //   3. Enforced repo script → npm run lint -- --max-warnings=0 (blocking)
         // ────────────────────────────────────────────────────────────────────
         stage('ESLint SAST — Server') {
             steps {
                 dir('server') {
                     echo '🔍 Running ESLint SAST on server (Node.js/Express)...'
                     sh '''
-                        echo "=== Installing ESLint + security plugin (CI-only) ==="
-                        npm install --save-dev \
-                            eslint@^9 \
-                            eslint-plugin-security@^3 \
-                            @microsoft/eslint-formatter-sarif@^3 \
-                            2>/dev/null
-
-                        echo "=== Writing ESLint flat config ==="
-                        cat > eslint.config.mjs << 'ESLINT_EOF'
-import security from 'eslint-plugin-security';
-
-export default [
-  {
-    files: ['**/*.js'],
-    plugins: { security },
-    rules: {
-      ...security.configs.recommended.rules,
-      'no-eval':                                        'error',
-      'no-implied-eval':                                'error',
-      'no-new-func':                                    'error',
-      'no-console':                                     'off',
-      'no-process-exit':                                'off',
-      'security/detect-non-literal-fs-filename':        'warn',
-      'security/detect-child-process':                  'error',
-      'security/detect-unsafe-regex':                   'error',
-      'security/detect-object-injection':               'warn',
-      'security/detect-possible-timing-attacks':        'warn',
-    },
-  },
-];
-ESLINT_EOF
-
                         echo "=== ESLint — SARIF output ==="
                         npx eslint \
                             --format @microsoft/eslint-formatter-sarif \
@@ -479,17 +452,20 @@ ESLINT_EOF
                             . || true
 
                         echo "=== ESLint — Human-readable (advisory) ==="
-                        npx eslint --format stylish . 2>&1 | tee ../eslint-server.txt || true
+                        npx eslint \
+                            --format stylish \
+                            . 2>&1 | tee ../eslint-server.txt || true
 
-                        echo "=== ESLint — Enforced (exits 1 if any error fires) ==="
-                        npx eslint --format stylish --max-warnings=0 . 2>&1 | tee -a ../eslint-server.txt
+                        echo "=== ESLint — Enforced (repo-owned script) ==="
+                        npm run lint -- \
+                            --format stylish \
+                            --max-warnings=0 2>&1 | tee -a ../eslint-server.txt
                     '''
                 }
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'eslint-server.sarif,eslint-server.txt', allowEmptyArchive: true
-                    sh 'rm -f server/eslint.config.mjs || true'
                 }
                 failure {
                     echo '❌ ESLint SAST (server): ERROR-level rules fired — review eslint-server.txt'
@@ -507,79 +483,37 @@ ESLINT_EOF
         // react/no-danger: 'error' — prevents XSS via raw HTML injection.
         // react/jsx-no-script-url: 'error' — prevents javascript: href XSS.
         //
-        // Client node_modules already installed (Stage 4) — adds devDeps only.
+        // Three passes:
+        //   1. SARIF output         → archivable audit trail (non-blocking)
+        //   2. Stylish advisory     → human-readable report (non-blocking)
+        //   3. Enforced repo script → npm run lint -- --max-warnings=0 (blocking)
         // ────────────────────────────────────────────────────────────────────
         stage('ESLint SAST — Client') {
             steps {
                 dir('client') {
                     echo '🔍 Running ESLint SAST on client (React 18)...'
                     sh '''
-                        echo "=== Installing ESLint + React + security plugins (CI-only) ==="
-                        npm install --save-dev \
-                            eslint@^9 \
-                            eslint-plugin-security@^3 \
-                            eslint-plugin-react@^7 \
-                            eslint-plugin-react-hooks@^5 \
-                            @microsoft/eslint-formatter-sarif@^3 \
-                            @babel/eslint-parser@^7 \
-                            2>/dev/null
-
-                        echo "=== Writing ESLint flat config for client ==="
-                        cat > eslint.config.mjs << 'ESLINT_EOF'
-import security   from 'eslint-plugin-security';
-import react      from 'eslint-plugin-react';
-import reactHooks from 'eslint-plugin-react-hooks';
-import babelParser from '@babel/eslint-parser';
-
-export default [
-  {
-    files: ['src/**/*.{js,jsx}'],
-    plugins: { security, react, 'react-hooks': reactHooks },
-    languageOptions: {
-      parser: babelParser,
-      parserOptions: {
-        requireConfigFile: false,
-        babelOptions: {
-          presets: ['@babel/preset-react'],
-        },
-      },
-    },
-    settings: { react: { version: 'detect' } },
-    rules: {
-      ...security.configs.recommended.rules,
-      ...react.configs.recommended.rules,
-      ...reactHooks.configs.recommended.rules,
-      'no-eval':                          'error',
-      'no-implied-eval':                  'error',
-      'react/no-danger':                  'error',
-      'react/jsx-no-script-url':          'error',
-      'security/detect-unsafe-regex':     'error',
-      'react/prop-types':                 'warn',
-    },
-  },
-];
-ESLINT_EOF
-
                         echo "=== ESLint — SARIF output ==="
                         npx eslint \
                             --format @microsoft/eslint-formatter-sarif \
                             --output-file ../eslint-client.sarif \
-                            src/ || true
+                            src || true
 
-                        echo "=== ESLint — Human-readable ==="
-                        npx eslint --format stylish src/ 2>&1 | tee ../eslint-client.txt || true
-
-                        echo "=== ESLint — Enforced ==="
+                        echo "=== ESLint — Human-readable (advisory) ==="
                         npx eslint \
                             --format stylish \
-                            src/
+                            src 2>&1 | tee ../eslint-client.txt || true
+
+                        echo "=== ESLint — Enforced (repo-owned script) ==="
+                        npm run lint -- \
+                            --format stylish \
+                            --max-warnings=0 2>&1 | tee -a ../eslint-client.txt
                     '''
                 }
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'eslint-client.sarif,eslint-client.txt', allowEmptyArchive: true
-                    sh 'rm -f client/eslint.config.mjs || true'
                 }
                 failure {
                     echo '❌ ESLint SAST (client): ERROR-level rules fired — review eslint-client.txt'
@@ -590,7 +524,7 @@ ESLINT_EOF
         // ────────────────────────────────────────────────────────────────────
         // STAGE 9 — Build & Test (Jest)
         //
-        // Covers server (Express route/unit tests with supertest).
+        // Covers server tests (Express route/unit tests with supertest).
         // DB calls mocked via jest.mock(). CI_TEST=true skips real MySQL
         // connection at startup — no DB container needed in CI.
         //
@@ -599,7 +533,6 @@ ESLINT_EOF
         //   --coverage     → LCOV + Cobertura XML coverage reports
         //   --forceExit    → prevents Jest hanging on open DB pool handles
         //   --runInBand    → serial execution (avoids port conflicts on CI)
-        //   --passWithNoTests → passes when no test files exist yet
         //
         // Coverage written to:
         //   coverage/lcov.info              → SonarQube ingestion (Stage 10)
@@ -614,43 +547,11 @@ ESLINT_EOF
                     echo '🧪 Running Jest tests with coverage (server)...'
                     sh """
                         cd server
-                        npm install --save-dev \
-                            jest@^29 \
-                            supertest@^7 \
-                            jest-junit@^16 \
-                            2>/dev/null
-
-                        cat > jest.config.js << 'JEST_EOF'
-module.exports = {
-  testEnvironment: 'node',
-  coverageReporters: ['text', 'lcov', 'cobertura'],
-  coverageDirectory: '../coverage',
-  collectCoverageFrom: [
-    '**/*.js',
-    '!node_modules/**',
-    '!jest.config.js',
-    '!eslint.config.mjs',
-  ],
-  reporters: [
-    'default',
-    ['jest-junit', {
-      outputDirectory: '..',
-      outputName: 'jest-results.xml',
-      classNameTemplate: '{classname}',
-      titleTemplate:     '{title}',
-    }],
-  ],
-};
-JEST_EOF
-
-                        cd ..
-
-                        CI_TEST=true npx --prefix server jest \
+                        CI_TEST=true npm test -- \
                             --ci \
                             --coverage \
                             --forceExit \
                             --runInBand \
-                            --passWithNoTests \
                             2>&1 | tee jest-output.txt
                     """
                 }
@@ -658,7 +559,6 @@ JEST_EOF
             post {
                 always {
                     archiveArtifacts artifacts: 'jest-results.xml,jest-output.txt,coverage/**', allowEmptyArchive: true
-                    sh 'rm -f server/jest.config.js || true'
                 }
                 failure {
                     echo '❌ Jest tests failed — review jest-output.txt and jest-results.xml'
@@ -694,8 +594,7 @@ JEST_EOF
                                 -Dsonar.projectName="${APP_NAME}" \\
                                 -Dsonar.projectVersion=${IMAGE_TAG} \\
                                 -Dsonar.sources=client/src,server \\
-                                -Dsonar.tests=client/src,server \\
-                                -Dsonar.test.inclusions="**/*.test.js,**/*.spec.js" \\
+                                -Dsonar.test.inclusions="**/*.test.js,**/*.spec.js,**/__tests__/**" \\
                                 -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \\
                                 -Dsonar.junit.reportPaths=jest-results.xml \\
                                 -Dsonar.exclusions="**/node_modules/**,client/public/**,nginx/**,coverage/**,**/*.min.js,**/jest.config.js,**/eslint.config.mjs,**/webpack.config.js" \\
