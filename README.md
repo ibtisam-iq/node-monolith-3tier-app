@@ -276,6 +276,23 @@ docker compose down -v
 
 ### Step 4 — DevSecOps Pipelines (CI/CD)
 
+The `jest.config.js` and `eslint.config.mjs` are absent from the codebase and were generated dynamically inside the Jenkinsfile as a workaround — that's a code smell, not a design decision.
+
+So, I added these files after fealing that config files should live directly in the codebase.
+
+```text
+server/
+├── jest.config.js          ← move out of Jenkinsfile sh block
+├── eslint.config.mjs       ← move out of Jenkinsfile sh block
+├── __tests__/
+│   └── health.test.js      ← basic smoke test so --passWithNoTests isn't needed
+└── package.json            ← add devDependencies + "test"/"lint" scripts
+
+client/
+├── eslint.config.mjs       ← move out of Jenkinsfile sh block
+└── package.json            ← add eslint devDependencies + "lint" script
+```
+
 With the application validated both natively and in containers, I built automated pipelines to transform this code into a secure, deployable artifact.
 
 Pipelines include: npm build → SonarQube analysis → Trivy vulnerability scan → Docker image build → Nexus artifact management → Jenkins & GitHub Actions automation.
