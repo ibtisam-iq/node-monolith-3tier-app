@@ -350,7 +350,7 @@ jobs:
             -Dsonar.junit.reportPaths=jest-results.xml
             "-Dsonar.exclusions=**/node_modules/**,client/public/**,nginx/**,coverage/**,**/*.min.js,**/jest.config.js,**/eslint.config.mjs,**/webpack.config.js"
             -Dsonar.sourceEncoding=UTF-8
-            # -Dsonar.working.directory=${{ github.workspace }}/.scannerwork
+            -Dsonar.working.directory=${{ github.workspace }}/.scannerwork
             
       - name: SonarQube — Quality Gate check
         uses: sonarsource/sonarqube-quality-gate-action@cf038b0e0cdecfa9e56c198bbb7d21d751d62c3b
